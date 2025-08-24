@@ -1,0 +1,632 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+    <title>JSON配置文件更新工具</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+    <style>
+        summary::-webkit-details-marker { display: none; }
+    </style>
+</head>
+<body class="min-h-screen bg-slate-950 text-slate-100 selection:bg-sky-600/30">
+<div class="w-[90vw] mx-auto py-4">
+    <!-- 顶部标题区 -->
+    <header class="mb-3">
+        <h1 class="text-3xl font-bold leading-tight">JSON配置文件更新工具</h1>
+        <p class="text-slate-400 text-lg">您的配置文件仅会在本地处理，不会被上传至服务器。
+        <p class="text-slate-400 text-lg">
+            用法示例：载入
+            <span class="font-mono text-slate-100">config_OLD.json</span>
+            （您的配置文件）与
+            <span class="font-mono text-slate-100">config_NEW.json</span>
+            （新配置文件），按需求进行覆盖/合并/填空并导出结果。
+        </p>
+        <div class="text-xs text-slate-600 my-1">
+            Copyright (C) 2025 <a href="https://github.com/leejch">https://github.com/leejch</a>
+        </div>
+        <div class="text-xs text-slate-600 my-1">
+            All Rights Reserved.
+        </div>
+    </header>
+
+    <!-- 工具栏：两个上传框 + 操作按钮 -->
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+        <!-- 旧文件上传 -->
+        <div id="oldBox" class="relative rounded-xl border border-slate-800 bg-slate-900/60 p-3 transition ring-0">
+            <div class="text-[13px] text-slate-400 font-semibold mb-1">旧文件（您的配置文件）</div>
+            <p id="oldStatus" class="text-[12px] text-slate-300">未选择</p>
+            <input id="oldInput" type="file" accept="application/json,.json"
+                   class="absolute inset-0 opacity-0 cursor-pointer"/>
+        </div>
+        <!-- 新文件上传 -->
+        <div id="newBox" class="relative rounded-xl border border-slate-800 bg-slate-900/60 p-3 transition ring-0">
+            <div class="text-[13px] text-slate-400 font-semibold mb-1">新文件（新配置文件）</div>
+            <p id="newStatus" class="text-[12px] text-slate-300">未选择</p>
+            <input id="newInput" type="file" accept="application/json,.json"
+                   class="absolute inset-0 opacity-0 cursor-pointer"/>
+        </div>
+        <button id="undoBtn"
+                class="h-11 px-4 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-50 font-semibold text-sm"
+                disabled>撤回
+        </button>
+        <button id="downloadBtn"
+                class="h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 font-bold text-sm disabled:opacity-50"
+                disabled>下载合并结果
+        </button>
+    </div>
+
+    <!-- 主区域：左侧 75% 操作区 + 右侧 25% 结果预览 -->
+    <div class="grid grid-cols-[3fr_1fr] gap-4 mt-4">
+        <!-- 左侧操作区 -->
+        <section class="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+            <div class="flex items-center justify-between gap-3 border-b border-slate-800 px-3 py-2">
+                <h2 class="text-sm font-semibold">操作区</h2>
+                <div class="flex items-center gap-2">
+                    <label class="inline-flex items-center gap-2 text-xs text-slate-300">
+                        <input type="checkbox" id="onlyChanged" class="h-4 w-4 align-middle" checked/> 只显示有差异
+                    </label>
+                    <input id="searchKey"
+                           class="h-9 w-60 rounded-lg border border-slate-800 bg-slate-900/60 px-2 text-sm focus:outline-none focus:ring-2 focus:ring-sky-500"
+                           placeholder="搜索"/>
+                </div>
+            </div>
+            <div class="p-3" id="sections">
+                <div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm text-slate-300">
+                    请先载入两个 JSON 文件。
+                </div>
+            </div>
+        </section>
+
+        <!-- 右侧预览区（25% 宽度） -->
+        <aside class="rounded-2xl border border-slate-800 bg-slate-900/60 overflow-hidden">
+            <div class="flex items-center justify-between border-b border-slate-800 px-3 py-2">
+                <h2 class="text-sm font-semibold">结果预览（实时）</h2>
+                <span id="stats" class="text-[12px] text-slate-300">—</span>
+            </div>
+            <div class="p-3">
+                <pre id="preview"
+                     class="font-mono text-[12px] leading-5 bg-slate-950 border border-slate-800 rounded-lg p-3 h-[72vh] overflow-auto whitespace-pre-wrap break-words">{
+    // 载入两个文件后开始…
+}</pre>
+            </div>
+        </aside>
+    </div>
+</div>
+
+<!-- 右下角 Toast -->
+<div id="toast"
+     class="fixed right-4 bottom-4 bg-slate-900/80 border border-slate-800 backdrop-blur px-3 py-2 rounded-lg text-[13px] opacity-0 translate-y-2 transition">
+    已应用
+</div>
+
+<script>
+    // ========================= 基础工具函数 =========================
+    /** 稳定克隆（仅 JSON 兼容类型） */
+    const clone = (obj) => JSON.parse(JSON.stringify(obj));
+    /** 原子类型判定 */
+    const isPrim = (v) => v === null || ['string', 'number', 'boolean'].includes(typeof v);
+    /** 类型标签 */
+    const kind = (v) => Array.isArray(v) ? 'array' : (v === null ? 'null' : typeof v);
+    /** 浅合并：只处理第一层 */
+    const shallowMerge = (dst, src) => {
+        dst = {...dst};
+        for (const k of Object.keys(src || {})) dst[k] = src[k];
+        return dst;
+    };
+    /** 仅填空：旧值缺失才写入 */
+    const fillMissing = (dst, src) => {
+        dst = {...dst};
+        for (const k of Object.keys(src || {})) if (!(k in dst)) dst[k] = src[k];
+        return dst;
+    };
+
+    /** 深比较（用于差异过滤） */
+    function deepEqual(a, b) {
+        if (a === b) return true;
+        const ta = kind(a), tb = kind(b);
+        if (ta !== tb) return false;
+        if (ta === 'array') {
+            if (a.length !== b.length) return false;
+            for (let i = 0; i < a.length; i++) if (!deepEqual(a[i], b[i])) return false;
+            return true;
+        }
+        if (ta === 'object') {
+            const ka = Object.keys(a || {}), kb = Object.keys(b || {});
+            if (ka.length !== kb.length) return false;
+            for (const k of ka) {
+                if (!deepEqual(a[k], b[k])) return false;
+            }
+            return true;
+        }
+        return false;
+    }
+
+    /** 判定是否武器对象（启发式） */
+    function isWeaponLike(obj) {
+        if (kind(obj) !== 'object') return false;
+        const hints = ['custom_smooth', 'fov_scale'];
+        let hit = 0;
+        for (const k of hints) if (k in obj) hit++;
+        return hit >= 2;
+    }
+
+    /** 体积估计 */
+    const roughSize = (obj) => (JSON.stringify(obj)?.length || 0);
+
+    /** Toast */
+    function toast(msg) {
+        const t = document.getElementById('toast');
+        t.textContent = msg;
+        t.classList.remove('opacity-0', 'translate-y-2');
+        t.classList.add('opacity-100');
+        setTimeout(() => {
+            t.classList.add('opacity-0', 'translate-y-2');
+        }, 1200);
+    }
+
+    // ========================= 全局状态 =========================
+    const state = {old: null, newer: null, result: null, history: []};
+
+    function pushHistory() {
+        if (!state.result) return;
+        state.history.push(JSON.stringify(state.result));
+        document.getElementById('undoBtn').disabled = state.history.length === 0;
+    }
+
+    function undo() {
+        const snap = state.history.pop();
+        if (snap) {
+            state.result = JSON.parse(snap);
+            renderPreview();
+            buildSections();
+        }
+        document.getElementById('undoBtn').disabled = state.history.length === 0;
+    }
+
+    // ========================= 文件读入 =========================
+    const oldInput = document.getElementById('oldInput');
+    const newInput = document.getElementById('newInput');
+    const oldStatus = document.getElementById('oldStatus');
+    const newStatus = document.getElementById('newStatus');
+
+    function readFile(input, onLoad) {
+        const f = input.files?.[0];
+        if (!f) return;
+        const reader = new FileReader();
+        reader.onload = () => {
+            try {
+                onLoad(JSON.parse(reader.result));
+            } catch (e) {
+                alert('JSON 解析失败：' + e.message);
+            }
+        };
+        reader.readAsText(f, 'utf-8');
+    }
+
+    function onOldLoaded(json) {
+        state.old = json;
+        state.result = clone(json);
+        state.history.length = 0;
+        oldStatus.textContent = `已载入（${(roughSize(json) / 1024).toFixed(1)} KB）`;
+        buildSections();
+        renderPreview();
+        updateDownloadBtn();
+    }
+
+    function onNewLoaded(json) {
+        state.newer = json;
+        newStatus.textContent = `已载入（${(roughSize(json) / 1024).toFixed(1)} KB）`;
+        buildSections();
+    }
+
+    oldInput.addEventListener('change', () => readFile(oldInput, onOldLoaded));
+    newInput.addEventListener('change', () => readFile(newInput, onNewLoaded));
+
+    // 拖拽高亮
+    for (const [box, cb] of [[document.getElementById('oldBox'), onOldLoaded], [document.getElementById('newBox'), onNewLoaded]]) {
+        box.addEventListener('dragover', e => {
+            e.preventDefault();
+            box.classList.add('ring-2', 'ring-sky-400');
+        });
+        box.addEventListener('dragleave', () => box.classList.remove('ring-2', 'ring-sky-400'));
+        box.addEventListener('drop', e => {
+            e.preventDefault();
+            box.classList.remove('ring-2', 'ring-sky-400');
+            const f = e.dataTransfer.files?.[0];
+            if (!f) return;
+            const reader = new FileReader();
+            reader.onload = () => {
+                try {
+                    cb(JSON.parse(reader.result));
+                } catch (err) {
+                    alert('JSON 解析失败：' + err.message);
+                }
+            };
+            reader.readAsText(f, 'utf-8');
+        });
+    }
+
+    // ========================= 构建操作区 =========================
+    const sections = document.getElementById('sections');
+    const onlyChanged = document.getElementById('onlyChanged');
+    const searchKey = document.getElementById('searchKey');
+    onlyChanged.addEventListener('change', buildSections);
+    searchKey.addEventListener('input', buildSections);
+
+    function buildSections() {
+        sections.innerHTML = '';
+        if (!state.old || !state.newer || !state.result) {
+            sections.innerHTML = '<div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm text-slate-300">请先载入两个 JSON 文件。</div>';
+            return;
+        }
+        const topKeys = Array.from(new Set([...Object.keys(state.old), ...Object.keys(state.newer)]));
+        for (const top of topKeys) {
+            const oTop = state.old[top], nTop = state.newer[top];
+            const hasDiff = !deepEqual(oTop, nTop);
+            if (onlyChanged.checked && !hasDiff) continue;
+
+            const sec = document.createElement('details');
+            sec.open = true;
+            sec.className = 'group bg-slate-900/40 border border-slate-800 rounded-xl mb-3';
+            const sum = document.createElement('summary');
+            sum.className = 'flex items-center justify-between px-3 py-2 cursor-pointer select-none';
+            sum.innerHTML = `<div class="flex items-center gap-2"><span class="text-sm font-semibold">${top}</span>${hasDiff ? '<span class=\'text-[11px] px-2 py-0.5 rounded border border-amber-500/60 text-amber-300 bg-amber-500/10\'>存在差异</span>' : '<span class=\'text-[11px] px-2 py-0.5 rounded border border-slate-700 text-slate-300 bg-slate-800/60\'>无差异</span>'}</div>` +
+                    `<div class="text-[12px] text-slate-400">旧:${kind(oTop)} / 新:${kind(nTop)}</div>`;
+            sec.appendChild(sum);
+
+            const wrap = document.createElement('div');
+            wrap.className = 'p-3 space-y-3';
+            if (kind(oTop) !== 'object' || kind(nTop) !== 'object') {
+                wrap.appendChild(makeRow([top], oTop, nTop, 'top'));
+            } else {
+                const k2 = Array.from(new Set([...Object.keys(oTop || {}), ...Object.keys(nTop || {})])).sort();
+                for (const k of k2) {
+                    const subPath = [top, k];
+                    if (filterOut(subPath)) continue;
+                    if (onlyChanged.checked && deepEqual(oTop?.[k], nTop?.[k])) continue;
+                    wrap.appendChild(makeRow(subPath, oTop?.[k], nTop?.[k], 'second'));
+                }
+            }
+            sec.appendChild(wrap);
+            sections.appendChild(sec);
+        }
+    }
+
+    function filterOut(pathArr) {
+        const q = searchKey.value.trim().toLowerCase();
+        if (!q) return false;
+        return !pathArr.join('.').toLowerCase().includes(q);
+    }
+
+    // 生成行：路径 / 预览(旧|新) / 动作
+    function makeRow(pathArr, oldVal, newVal, level) {
+        const row = document.createElement('div');
+        row.className = 'grid grid-cols-[minmax(180px,220px)_1fr_auto] gap-3 items-start bg-slate-900/40 border border-slate-800 p-3 rounded-lg';
+
+        const kpath = document.createElement('div');
+        kpath.className = 'font-mono text-[12px] text-slate-300 break-all';
+        kpath.innerHTML = `<span class="text-slate-500">${pathArr.slice(0, -1).join('.')}.</span><b>${pathArr.at(-1)}</b>`;
+
+        const preview = document.createElement('div');
+        preview.className = 'grid grid-cols-2 gap-2';
+        const preOld = document.createElement('pre');
+        preOld.className = 'font-mono text-[12px] leading-5 bg-slate-950 border border-slate-800 rounded-md p-2 max-h-56 overflow-auto whitespace-pre-wrap break-words';
+        preOld.textContent = fmtPreview(oldVal);
+        const preNew = document.createElement('pre');
+        preNew.className = 'font-mono text-[12px] leading-5 bg-slate-950 border border-slate-800 rounded-md p-2 max-h-56 overflow-auto whitespace-pre-wrap break-words';
+        preNew.textContent = fmtPreview(newVal);
+        preview.append(preOld, preNew);
+
+        const act = document.createElement('div');
+        act.className = 'flex flex-wrap items-center justify-end gap-2';
+        const tOld = kind(oldVal), tNew = kind(newVal);
+
+        if (isPrim(newVal) || isPrim(oldVal)) {
+            const btn = makeBtn('用新值覆盖', () => applyReplace(pathArr, newVal));
+            if (newVal === undefined) btn.disabled = true;
+            act.append(btn);
+        } else if (tOld === 'array' || tNew === 'array') {
+            const btn = makeBtn('整体替换数组', () => applyReplace(pathArr, newVal));
+            if (tNew !== 'array') btn.disabled = true;
+            act.append(btn);
+        } else if (tOld === 'object' || tNew === 'object') {
+            const top = pathArr[0];
+            const weapon = (top === 'aimbot') && isWeaponLike(newVal || oldVal);
+            if (weapon) {
+                const vcol = document.createElement('div');
+                vcol.className = 'flex flex-col gap-2 items-stretch';
+                const btn1 = makeBtn('整体替换（武器）', () => applyReplace(pathArr, newVal));
+                if (tNew !== 'object') btn1.disabled = true;
+                const btn2 = makeBtn('选择部分替换', () => openPartialReplace(pathArr));
+                vcol.append(btn1, btn2);
+                act.append(vcol);
+            } else {
+                const wrap = document.createElement('div');
+                wrap.className = 'flex flex-col items-end gap-2';
+                const apply = makeBtn('应用策略', () => {
+                    const v = wrap.querySelector('input:checked')?.value;
+                    if (v === 'replace') applyReplace(pathArr, newVal); else if (v === 'shallow') applyShallow(pathArr); else if (v === 'fill') applyFill(pathArr);
+                });
+                const list = document.createElement('div');
+                list.className = 'flex flex-col gap-1';
+                const name = 'r-' + pathArr.join('·');
+                const r1 = radio(name, 'replace', '替换', true);
+                const r2 = radio(name, 'shallow', '浅合并', false);
+                const r3 = radio(name, 'fill', '仅填空', false);
+                list.append(r1.lab, r2.lab, r3.lab);
+                wrap.append(apply, list);
+                act.append(wrap);
+            }
+        }
+
+        row.append(kpath, preview, act);
+        return row;
+    }
+
+    function radio(name, value, labelText, checked) {
+        const lab = document.createElement('label');
+        lab.className = 'inline-flex items-center gap-2 text-[12px] text-slate-300';
+        const r = document.createElement('input');
+        r.type = 'radio';
+        r.name = name;
+        r.value = value;
+        r.checked = !!checked;
+        r.className = 'h-4 w-4 align-middle';
+        lab.append(r, document.createTextNode(labelText));
+        return {el: r, lab};
+    }
+
+    function makeBtn(text, fn) {
+        const b = document.createElement('button');
+        b.className = 'h-9 px-3 rounded-lg bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-50 text-[12px] font-semibold';
+        b.textContent = text;
+        b.addEventListener('click', fn);
+        return b;
+    }
+
+    function fmtPreview(v) {
+        if (v === undefined) return '（新文件缺失）';
+        if (isPrim(v)) return String(v);
+        try {
+            return JSON.stringify(v, null, 2);
+        } catch {
+            return String(v);
+        }
+    }
+
+    // ========================= 应用操作 =========================
+    function getRefByPath(pathArr) {
+        const parent = pathArr.slice(0, -1).reduce((acc, k) => acc && typeof acc === 'object' ? acc[k] : undefined, state.result);
+        const key = pathArr.at(-1);
+        return {parent, key, exists: !!(parent && Object.prototype.hasOwnProperty.call(parent, key))};
+    }
+
+    function path(pathArr, root) {
+        return pathArr.reduce((acc, k) => acc && acc[k], root);
+    }
+
+    function applyReplace(pathArr, newVal) {
+        if (newVal === undefined) {
+            alert('新文件缺少该路径，无法替换。');
+            return;
+        }
+        pushHistory();
+        const {parent, key} = getRefByPath(pathArr);
+        if (!parent || typeof parent !== 'object') {
+            alert('结果集中该路径不存在父对象。');
+            return;
+        }
+        parent[key] = clone(newVal);
+        renderPreview();
+        buildSections();
+        toast('已覆盖：' + pathArr.join('.'));
+    }
+
+    function applyShallow(pathArr) {
+        pushHistory();
+        const {parent, key} = getRefByPath(pathArr);
+        const oldVal = parent?.[key];
+        const newVal = path(pathArr, state.newer);
+        if (kind(oldVal) !== 'object' || kind(newVal) !== 'object') {
+            alert('浅合并仅适用于对象。');
+            return;
+        }
+        parent[key] = shallowMerge(oldVal || {}, newVal || {});
+        renderPreview();
+        buildSections();
+        toast('已浅合并：' + pathArr.join('.'));
+    }
+
+    function applyFill(pathArr) {
+        pushHistory();
+        const {parent, key} = getRefByPath(pathArr);
+        const oldVal = parent?.[key];
+        const newVal = path(pathArr, state.newer);
+        if (kind(oldVal) !== 'object' || kind(newVal) !== 'object') {
+            alert('仅填空仅适用于对象。');
+            return;
+        }
+        parent[key] = fillMissing(oldVal || {}, newVal || {});
+        renderPreview();
+        buildSections();
+        toast('已填空：' + pathArr.join('.'));
+    }
+
+    // ========================= 武器局部替换弹层 =========================
+    function openPartialReplace(pathArr) {
+        const oldObj = path(pathArr, state.result);
+        const newObj = path(pathArr, state.newer);
+        if (kind(oldObj) !== 'object' || kind(newObj) !== 'object') {
+            alert('仅支持对象类型的局部替换。');
+            return;
+        }
+
+        // 键集合 & 默认选择（默认选“有差异”的键且新值存在）
+        const keys = Array.from(new Set([...Object.keys(oldObj || {}), ...Object.keys(newObj || {})])).sort();
+        const selected = new Set(keys.filter(k => !deepEqual(oldObj?.[k], newObj?.[k]) && (k in newObj)));
+
+        // 蒙层
+        const mask = document.createElement('div');
+        mask.className = 'fixed inset-0 z-50 bg-black/60 flex items-center justify-center p-4';
+
+        // 面板：三列（各占 1/3），每列始终显示滚动条
+        const panel = document.createElement('div');
+        panel.className = 'w-[90vw] max-w-[1200px] h-[80vh] bg-slate-950 border border-slate-800 overflow-hidden grid grid-cols-3';
+
+        // 左列：旧值
+        const left = document.createElement('div');
+        left.className = 'h-full overflow-y-scroll p-3 border-r border-slate-800';
+        const tOld = document.createElement('div');
+        tOld.className = 'text-xs text-slate-300 mb-2';
+        tOld.textContent = '旧值';
+        const preOld = document.createElement('pre');
+        preOld.className = 'font-mono text-[12px] leading-5 bg-slate-950 border border-slate-800 rounded-lg p-3 whitespace-pre-wrap break-words';
+        preOld.textContent = JSON.stringify(oldObj, null, 2);
+        left.append(tOld, preOld);
+
+        // 中列：新值
+        const mid = document.createElement('div');
+        mid.className = 'h-full overflow-y-scroll p-3 border-r border-slate-800';
+        const tNew = document.createElement('div');
+        tNew.className = 'text-xs text-slate-300 mb-2';
+        tNew.textContent = '新值';
+        const preNew = document.createElement('pre');
+        preNew.className = 'font-mono text-[12px] leading-5 bg-slate-950 border border-slate-800 rounded-lg p-3 whitespace-pre-wrap break-words';
+        preNew.textContent = JSON.stringify(newObj, null, 2);
+        mid.append(tNew, preNew);
+
+        // 右列：操作（顶部按钮 + 下方开关列表），整列也始终显示滚动条
+        const right = document.createElement('div');
+        right.className = 'h-full overflow-y-scroll';
+
+        const topbar = document.createElement('div');
+        topbar.className = 'sticky top-0 z-10 bg-slate-950/95 border-b border-slate-800 p-3 grid grid-cols-3 gap-2';
+        const btnApply = makeBtn('执行局部替换', () => applyPartial());
+        btnApply.classList.add('bg-sky-600', 'hover:bg-sky-500', 'border-sky-500');
+        const btnOnlyDiff = makeBtn('只选差异', () => {
+            selected.clear();
+            keys.forEach(k => {
+                if (!deepEqual(oldObj?.[k], newObj?.[k]) && (k in newObj)) selected.add(k);
+            });
+            refreshToggles();
+        });
+        const btnSelectAll = makeBtn('全选', () => {
+            selected.clear();
+            keys.forEach(k => {
+                if (k in newObj) selected.add(k);
+            });
+            refreshToggles();
+        });
+        const btnSelectNone = makeBtn('全不选', () => {
+            selected.clear();
+            refreshToggles();
+        });
+        const btnClose = makeBtn('关闭', () => document.body.removeChild(mask));
+        topbar.append(btnOnlyDiff, btnSelectAll, btnSelectNone);
+        const row2 = document.createElement('div');
+        row2.className = 'col-span-3 grid grid-cols-2 gap-2';
+        row2.append(btnApply, btnClose);
+        topbar.append(row2);
+
+        const listWrap = document.createElement('div');
+        listWrap.className = 'p-3';
+        const list = document.createElement('div');
+        list.className = 'grid grid-cols-1 gap-2';
+        listWrap.appendChild(list);
+
+        function refreshToggles() {
+            list.innerHTML = '';
+            keys.forEach(k => {
+                const row = document.createElement('label');
+                row.className = 'flex items-center justify-between gap-3 bg-slate-900/40 border border-slate-800 rounded-lg p-2';
+                const leftbox = document.createElement('div');
+                leftbox.className = 'min-w-0';
+                const name = document.createElement('div');
+                name.className = 'font-mono text-[12px] text-slate-200 truncate';
+                name.textContent = k;
+                const meta = document.createElement('div');
+                meta.className = 'text-[11px] text-slate-400';
+                const diff = !deepEqual(oldObj?.[k], newObj?.[k]);
+                meta.textContent = `${kind(oldObj?.[k])} → ${kind(newObj?.[k])}${diff ? ' · 有差异' : ''}`;
+                leftbox.append(name, meta);
+                const sw = document.createElement('input');
+                sw.type = 'checkbox';
+                sw.className = 'h-4 w-4';
+                sw.checked = selected.has(k);
+                if (!(k in newObj)) {
+                    sw.disabled = true;
+                    row.classList.add('opacity-60');
+                }
+                sw.addEventListener('change', () => {
+                    if (sw.checked) selected.add(k); else selected.delete(k);
+                });
+                row.append(leftbox, sw);
+                list.appendChild(row);
+            });
+        }
+
+        refreshToggles();
+
+        right.append(topbar, listWrap);
+
+        panel.append(left, mid, right);
+        mask.appendChild(panel);
+        document.body.appendChild(mask);
+
+        function applyPartial() {
+            if (selected.size === 0) {
+                alert('请先选择至少一个键。');
+                return;
+            }
+            pushHistory();
+            const {parent, key} = getRefByPath(pathArr);
+            const target = parent?.[key] || {};
+            selected.forEach(k => {
+                if (k in newObj) target[k] = clone(newObj[k]);
+            });
+            parent[key] = target;
+            renderPreview();
+            buildSections();
+            toast('已局部替换：' + pathArr.join('.'));
+            document.body.removeChild(mask);
+        }
+    }
+
+    // ========================= 预览与导出 =========================
+    const preview = document.getElementById('preview');
+    const stats = document.getElementById('stats');
+
+    function renderPreview() {
+        if (!state.result) {
+            preview.textContent = '{}';
+            return;
+        }
+        preview.textContent = JSON.stringify(state.result, null, 2);
+        const kb = (roughSize(state.result) / 1024).toFixed(1);
+        const top = Object.keys(state.result || {}).length;
+        stats.textContent = `大小 ${kb} KB · 顶层键 ${top}`;
+        updateDownloadBtn();
+    }
+
+    const downloadBtn = document.getElementById('downloadBtn');
+
+    function updateDownloadBtn() {
+        downloadBtn.disabled = !state.result;
+    }
+
+    downloadBtn.addEventListener('click', () => {
+        const blob = new Blob([JSON.stringify(state.result, null, 2)], {type: 'application/json'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = 'config_merged.json';
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+    });
+
+    document.getElementById('undoBtn').addEventListener('click', undo);
+</script>
+</body>
+</html>
