@@ -31,7 +31,7 @@
     </header>
 
     <!-- 工具栏：两个上传框 + 操作按钮 -->
-    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3">
+    <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-6 gap-3">
         <!-- 旧文件上传 -->
         <div id="oldBox" class="relative rounded-xl border border-slate-800 bg-slate-900/60 p-3 transition ring-0">
             <div class="text-[13px] text-slate-400 font-semibold mb-1">旧文件（您的配置文件）</div>
@@ -49,6 +49,14 @@
         <button id="undoBtn"
                 class="h-11 px-4 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 disabled:opacity-50 font-semibold text-sm"
                 disabled>撤回
+        </button>
+        <button id="updateWeaponsBtn"
+                class="h-11 px-4 rounded-xl bg-indigo-600 hover:bg-indigo-500 border border-indigo-500 disabled:opacity-50 font-semibold text-sm"
+                disabled>仅更新所有武器
+        </button>
+        <button id="updateAllBtn"
+                class="h-11 px-4 rounded-xl bg-amber-600 hover:bg-amber-500 border border-amber-500 disabled:opacity-50 font-semibold text-sm"
+                disabled>全部更新
         </button>
         <button id="downloadBtn"
                 class="h-11 px-4 rounded-xl bg-emerald-600 hover:bg-emerald-500 border border-emerald-500 font-bold text-sm disabled:opacity-50"
@@ -182,6 +190,7 @@
             buildSections();
         }
         document.getElementById('undoBtn').disabled = state.history.length === 0;
+        updateActionButtons();
     }
 
     // ========================= 文件读入 =========================
@@ -212,12 +221,14 @@
         buildSections();
         renderPreview();
         updateDownloadBtn();
+        updateActionButtons();
     }
 
     function onNewLoaded(json) {
         state.newer = json;
         newStatus.textContent = `已载入（${(roughSize(json) / 1024).toFixed(1)} KB）`;
         buildSections();
+        updateActionButtons();
     }
 
     oldInput.addEventListener('change', () => readFile(oldInput, onOldLoaded));
@@ -260,7 +271,10 @@
             sections.innerHTML = '<div class="rounded-xl border border-slate-800 bg-slate-900/50 p-3 text-sm text-slate-300">请先载入两个 JSON 文件。</div>';
             return;
         }
-        const topKeys = Array.from(new Set([...Object.keys(state.old), ...Object.keys(state.newer)]));
+        // 顶层键排序：保证 aimbot 在最前，然后按字典序
+        const topKeys = Array.from(new Set([...Object.keys(state.old), ...Object.keys(state.newer)]))
+                .sort((a, b) => (a === 'aimbot' ? -1 : b === 'aimbot' ? 1 : a.localeCompare(b)));
+
         for (const top of topKeys) {
             const oTop = state.old[top], nTop = state.newer[top];
             const hasDiff = !deepEqual(oTop, nTop);
@@ -280,8 +294,18 @@
             if (kind(oTop) !== 'object' || kind(nTop) !== 'object') {
                 wrap.appendChild(makeRow([top], oTop, nTop, 'top'));
             } else {
-                const k2 = Array.from(new Set([...Object.keys(oTop || {}), ...Object.keys(nTop || {})])).sort();
-                for (const k of k2) {
+                const allKeys = Array.from(new Set([...Object.keys(oTop || {}), ...Object.keys(nTop || {})]));
+                // 武器优先：在 aimbot 下将武器对象排前，再按字典序
+                let weaponKeys = [];
+                let otherKeys = [];
+                for (const k of allKeys) {
+                    const candidate = (nTop || {})[k] ?? (oTop || {})[k];
+                    if (top === 'aimbot' && isWeaponLike(candidate)) weaponKeys.push(k); else otherKeys.push(k);
+                }
+                weaponKeys.sort();
+                otherKeys.sort();
+                const ordered = (top === 'aimbot') ? [...weaponKeys, ...otherKeys] : otherKeys.sort();
+                for (const k of ordered) {
                     const subPath = [top, k];
                     if (filterOut(subPath)) continue;
                     if (onlyChanged.checked && deepEqual(oTop?.[k], nTop?.[k])) continue;
@@ -421,6 +445,7 @@
         renderPreview();
         buildSections();
         toast('已覆盖：' + pathArr.join('.'));
+        updateActionButtons();
     }
 
     function applyShallow(pathArr) {
@@ -436,6 +461,7 @@
         renderPreview();
         buildSections();
         toast('已浅合并：' + pathArr.join('.'));
+        updateActionButtons();
     }
 
     function applyFill(pathArr) {
@@ -451,6 +477,45 @@
         renderPreview();
         buildSections();
         toast('已填空：' + pathArr.join('.'));
+        updateActionButtons();
+    }
+
+    // 批量：仅更新所有武器（aimbot 下识别为武器的二级对象）
+    function bulkUpdateWeapons() {
+        if (!state.newer) {
+            alert('请先载入新文件。');
+            return;
+        }
+        pushHistory();
+        const nAimbot = state.newer?.aimbot || {};
+        if (!state.result.aimbot) state.result.aimbot = {};
+        const rAimbot = state.result.aimbot;
+        let cnt = 0;
+        for (const k of Object.keys(nAimbot)) {
+            const v = nAimbot[k];
+            if (isWeaponLike(v)) {
+                rAimbot[k] = clone(v);
+                cnt++;
+            }
+        }
+        renderPreview();
+        buildSections();
+        toast(`已更新武器：${cnt} 项`);
+        updateActionButtons();
+    }
+
+    // 批量：全部更新（直接用新文件整体替换结果）
+    function bulkUpdateAll() {
+        if (!state.newer) {
+            alert('请先载入新文件。');
+            return;
+        }
+        pushHistory();
+        state.result = clone(state.newer);
+        renderPreview();
+        buildSections();
+        toast('已全部更新（用新文件整体替换）');
+        updateActionButtons();
     }
 
     // ========================= 武器局部替换弹层 =========================
@@ -590,6 +655,7 @@
             buildSections();
             toast('已局部替换：' + pathArr.join('.'));
             document.body.removeChild(mask);
+            updateActionButtons();
         }
     }
 
@@ -610,9 +676,18 @@
     }
 
     const downloadBtn = document.getElementById('downloadBtn');
+    const updateWeaponsBtn = document.getElementById('updateWeaponsBtn');
+    const updateAllBtn = document.getElementById('updateAllBtn');
 
     function updateDownloadBtn() {
         downloadBtn.disabled = !state.result;
+    }
+
+    function updateActionButtons() {
+        const ready = !!(state.old && state.newer && state.result);
+        updateWeaponsBtn.disabled = !ready;
+        updateAllBtn.disabled = !ready;
+        updateDownloadBtn();
     }
 
     downloadBtn.addEventListener('click', () => {
@@ -627,6 +702,8 @@
     });
 
     document.getElementById('undoBtn').addEventListener('click', undo);
+    updateWeaponsBtn.addEventListener('click', bulkUpdateWeapons);
+    updateAllBtn.addEventListener('click', bulkUpdateAll);
 </script>
 </body>
 </html>
